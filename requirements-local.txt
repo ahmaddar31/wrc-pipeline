@@ -1,0 +1,15 @@
+# -----------------------------------------------------------------------
+# requirements-local.txt — for local development on Mac
+# Install with: pip install -r requirements-local.txt
+# Airflow is excluded — it runs in Docker only.
+# -----------------------------------------------------------------------
+scrapy==2.11.2
+pymongo==4.8.0
+minio==7.2.7
+python-dotenv==1.0.1
+beautifulsoup4==4.12.3
+lxml==5.2.2
+pydantic==2.8.2
+pydantic-settings==2.3.4
+fake-useragent==1.5.1
+requests==2.32.3

@@ -1,0 +1,153 @@
+version: "3.9"
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.9.2
+  env_file:
+    - .env
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.session"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
+    AIRFLOW_UID: ${AIRFLOW_UID:-50000}
+    PYTHONPATH: /opt/airflow
+    # SMTP — fill in to enable email alerts on task failure
+    AIRFLOW__SMTP__SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+    AIRFLOW__SMTP__SMTP_STARTTLS: "true"
+    AIRFLOW__SMTP__SMTP_SSL: "false"
+    AIRFLOW__SMTP__SMTP_PORT: ${SMTP_PORT:-587}
+    AIRFLOW__SMTP__SMTP_USER: ${SMTP_USER:-}
+    AIRFLOW__SMTP__SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    AIRFLOW__SMTP__SMTP_MAIL_FROM: ${SMTP_USER:-airflow@localhost}
+  user: "${AIRFLOW_UID:-50000}:0"
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./app:/opt/airflow/app
+    - ./data:/opt/airflow/data
+    - ./requirements.txt:/requirements.txt
+    - ./scrapy.cfg:/opt/airflow/scrapy.cfg
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+    mongo:
+      condition: service_started
+    minio:
+      condition: service_started
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: wrc_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  minio:
+    image: minio/minio:latest
+    container_name: wrc_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  postgres:
+    image: postgres:16
+    container_name: airflow_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: airflow_redis
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        pip install --no-cache-dir -r /requirements.txt
+        airflow db upgrade
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com
+        airflow connections add mongo_wrc \
+          --conn-type generic \
+          --conn-host mongo \
+          --conn-port 27017 \
+          --conn-login root \
+          --conn-password root \
+          --conn-extra '{"authSource": "admin"}' || true
+        airflow connections add minio_wrc \
+          --conn-type generic \
+          --conn-host minio \
+          --conn-port 9000 \
+          --conn-login "${MINIO_ACCESS_KEY}" \
+          --conn-password "${MINIO_SECRET_KEY}" || true
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow_webserver
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - pip install --no-cache-dir -r /requirements.txt && airflow webserver
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow_scheduler
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - pip install --no-cache-dir -r /requirements.txt && airflow scheduler
+    restart: unless-stopped
+
+  airflow-worker:
+    <<: *airflow-common
+    container_name: airflow_worker
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - pip install --no-cache-dir -r /requirements.txt && airflow celery worker
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
+  minio_data:
+  postgres_data:

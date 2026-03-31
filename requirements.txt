@@ -1,0 +1,19 @@
+# -----------------------------------------------------------------------
+# requirements.txt — used inside Docker (Airflow containers, Linux)
+# Do NOT install this locally on Mac — google-re2 needs abseil-cpp headers.
+# For local development use: pip install -r requirements-local.txt
+# -----------------------------------------------------------------------
+scrapy==2.11.2
+pymongo==4.8.0
+minio==7.2.7
+python-dotenv==1.0.1
+beautifulsoup4==4.12.3
+lxml==5.2.2
+pydantic==2.8.2
+pydantic-settings==2.3.4
+psycopg2-binary==2.9.9
+redis==5.0.7
+fake-useragent==1.5.1
+apache-airflow==2.9.2
+apache-airflow-providers-celery==3.7.0
+requests==2.32.3
