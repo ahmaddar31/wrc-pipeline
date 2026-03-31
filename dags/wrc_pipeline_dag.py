@@ -1,8 +1,8 @@
-"""Airflow DAG: WRC ingestion → transformation → quality check → gold stage → aggregate stats.
+"""Airflow DAG: WRC ingestion → transformation.
 
-Monthly schedule. Dates are computed automatically:
+Weekly schedule. Dates are computed automatically:
   - end_date   = the day the DAG runs  ({{ ds }})
-  - start_date = one month before      ({{ macros.ds_add(ds, -30) }})
+  - start_date = one week before       ({{ macros.ds_add(ds, -7) }})
 
 Manual trigger with optional JSON config:
     {
@@ -11,11 +11,7 @@ Manual trigger with optional JSON config:
     }
 
 Task order:
-    scrape_landing_zone
-        >> transform_processed_zone
-        >> quality_check
-        >> gold_stage
-        >> aggregate_stats
+    scrape_landing_zone >> transform_processed_zone
 
 Credentials are managed through Airflow Connections (Admin → Connections in the UI):
   - mongo_wrc  : MongoDB URI
@@ -76,8 +72,6 @@ def _conn_env() -> dict:
     env = {}
     try:
         mongo = BaseHook.get_connection("mongo_wrc")
-        # get_uri() returns "generic://..." for generic connections — build the
-        # mongodb:// URI explicitly from the individual fields instead.
         env["MONGO_URI"] = (
             f"mongodb://{mongo.login}:{mongo.get_password()}"
             f"@{mongo.host}:{mongo.port}/"
@@ -155,60 +149,4 @@ with DAG(
         ),
     )
 
-    quality_check = BashOperator(
-        task_id="quality_check",
-        retries=1,
-        retry_delay=timedelta(minutes=2),
-        execution_timeout=timedelta(minutes=15),
-        env=_creds,
-        bash_command=(
-            f"cd /opt/airflow && "
-            f"python -m app.quality.check "
-            f"--start-date {_start} "
-            f"--end-date {_end}"
-        ),
-        doc_md=(
-            "Validates data quality before promotion to the gold layer.\n\n"
-            "- Checks all landing records have required fields\n"
-            "- Checks every landing record has a processed counterpart\n"
-            f"- Fails if record failure rate exceeds threshold"
-        ),
-    )
-
-    gold_stage = BashOperator(
-        task_id="gold_stage",
-        execution_timeout=timedelta(hours=1),
-        env=_creds,
-        bash_command=(
-            f"cd /opt/airflow && "
-            f"python -m app.gold.gold "
-            f"--start-date {_start} "
-            f"--end-date {_end}"
-        ),
-        doc_md=(
-            "Promotes processed documents into the **gold layer**.\n\n"
-            "- Extracts plain text and computes word count for HTML decisions\n"
-            "- Adds `has_pdf` flag and denormalised metadata\n"
-            "- Upserts into MongoDB `gold_decisions` (indexed for fast analytics)"
-        ),
-    )
-
-    aggregate_stats = BashOperator(
-        task_id="aggregate_stats",
-        execution_timeout=timedelta(minutes=15),
-        env=_creds,
-        bash_command=(
-            f"cd /opt/airflow && "
-            f"python -m app.gold.aggregate "
-            f"--start-date {_start} "
-            f"--end-date {_end}"
-        ),
-        doc_md=(
-            "Builds the **monthly statistics data mart** from the gold layer.\n\n"
-            "- Groups decisions by body × month\n"
-            "- Computes: total decisions, PDF count, HTML count, avg word count\n"
-            "- Upserts into MongoDB `monthly_stats` — ready for dashboards / reporting"
-        ),
-    )
-
-    scrape >> transform >> quality_check >> gold_stage >> aggregate_stats
+    scrape >> transform

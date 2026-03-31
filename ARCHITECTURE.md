@@ -5,7 +5,7 @@
 Weekly partitions (`YYYY-Www`) were chosen over monthly for two reasons driven directly by the scale requirement (500k–1M+ documents):
 
 1. **Smaller retry blast radius** — at high volume, a failed monthly partition could mean re-scraping thousands of records. A weekly partition caps the worst-case retry at ~250 records, making failures cheap to recover from.
-2. **Lower data freshness lag** — decisions published on day 1 of a month are available in the gold layer within 7 days instead of up to 30. At scale this matters when downstream consumers (search indexes, dashboards) need recent data.
+2. **Lower data freshness lag** — decisions published on day 1 of a month are available in the processed layer within 7 days instead of up to 30. At scale this matters when downstream consumers (search indexes, dashboards) need recent data.
 
 Weekly partitions do produce more Airflow runs (52/year vs 12), but each run is smaller and faster — which is the right trade-off when designing for 1000x volume. The `partition_date` key (`YYYY-Www`) is stored on every MongoDB record and reflected in MinIO paths and log directories, so any single week can be re-processed in isolation without touching others.
 
@@ -39,7 +39,7 @@ The combination means: unchanged content → no re-upload, metadata timestamp re
 
 ## Scaling to 50+ Sources
 
-The current design separates concerns cleanly (spider → pipeline → transform → gold), so adding sources is additive rather than invasive. The main changes needed:
+The current design separates concerns cleanly (spider → pipeline → transform), so adding sources is additive rather than invasive. The main changes needed:
 
 - **Spider registry** — each source becomes its own Scrapy spider class in `app/scraper/spiders/`. The DAG accepts a `source` parameter and dispatches to the correct spider. A shared base class handles common logic (pagination, error handling, stats tracking); subclasses override only the site-specific CSS selectors and URL construction.
 

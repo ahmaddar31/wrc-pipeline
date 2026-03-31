@@ -22,8 +22,6 @@ class AppConfig:
     mongo_db: str
     mongo_landing_collection: str
     mongo_processed_collection: str
-    mongo_gold_collection: str
-    mongo_stats_collection: str
 
     minio_endpoint: str
     minio_access_key: str
@@ -54,8 +52,6 @@ def get_config() -> AppConfig:
         mongo_db=os.getenv("MONGO_DB", "wrc_pipeline"),
         mongo_landing_collection=os.getenv("MONGO_LANDING_COLLECTION", "landing_metadata"),
         mongo_processed_collection=os.getenv("MONGO_PROCESSED_COLLECTION", "processed_metadata"),
-        mongo_gold_collection=os.getenv("MONGO_GOLD_COLLECTION", "gold_decisions"),
-        mongo_stats_collection=os.getenv("MONGO_STATS_COLLECTION", "monthly_stats"),
 
         minio_endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"),
         minio_access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),

@@ -14,8 +14,6 @@ class MongoMetadataClient:
         self.db = self.client[config.mongo_db]
         self.landing_collection: Collection = self.db[config.mongo_landing_collection]
         self.processed_collection: Collection = self.db[config.mongo_processed_collection]
-        self.gold_collection: Collection = self.db[config.mongo_gold_collection]
-        self.stats_collection: Collection = self.db[config.mongo_stats_collection]
         self._ensure_indexes()
 
     def _ensure_indexes(self) -> None:
@@ -28,24 +26,6 @@ class MongoMetadataClient:
             [("source", ASCENDING), ("identifier", ASCENDING)],
             unique=True,
             name="uq_source_identifier_processed",
-        )
-        self.gold_collection.create_index(
-            [("source", ASCENDING), ("identifier", ASCENDING)],
-            unique=True,
-            name="uq_source_identifier_gold",
-        )
-        self.gold_collection.create_index(
-            [("published_date_iso", ASCENDING)],
-            name="idx_gold_published_date",
-        )
-        self.gold_collection.create_index(
-            [("body_id", ASCENDING)],
-            name="idx_gold_body_id",
-        )
-        self.stats_collection.create_index(
-            [("body_id", ASCENDING), ("year_month", ASCENDING)],
-            unique=True,
-            name="uq_stats_body_month",
         )
 
     def upsert_landing_metadata(self, document: dict) -> None:
@@ -99,21 +79,3 @@ class MongoMetadataClient:
             )
         )
 
-    def upsert_monthly_stat(self, document: dict) -> None:
-        self.stats_collection.update_one(
-            {"body_id": document["body_id"], "year_month": document["year_month"]},
-            {"$set": document},
-            upsert=True,
-        )
-
-    def upsert_gold_decision(self, document: dict) -> None:
-        now = datetime.utcnow().isoformat() + "Z"
-        document["gold_processed_at"] = now
-        self.gold_collection.update_one(
-            {"source": document["source"], "identifier": document["identifier"]},
-            {
-                "$set": document,
-                "$setOnInsert": {"created_at": now},
-            },
-            upsert=True,
-        )

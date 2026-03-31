@@ -3,7 +3,7 @@
 A production-grade data pipeline that scrapes legal decisions from
 [workplacerelations.ie](https://www.workplacerelations.ie/en/cases/),
 stores raw files in MinIO, metadata in MongoDB, and processes data through
-Bronze → Silver → Gold layers orchestrated by Apache Airflow.
+Bronze → Silver layers orchestrated by Apache Airflow.
 
 ---
 
@@ -42,48 +42,37 @@ Bronze → Silver → Gold layers orchestrated by Apache Airflow.
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Apache Airflow                       │
-│  scrape → transform → quality_check → gold → aggregate  │
-└────────────────────────┬────────────────────────────────┘
-                         │ orchestrates
-         ┌───────────────┼───────────────┐
-         ▼               ▼               ▼
-    ┌─────────┐    ┌──────────┐    ┌──────────┐
-    │ Scrapy  │    │  MinIO   │    │ MongoDB  │
-    │ Spider  │───▶│ (files)  │    │(metadata)│
-    └─────────┘    └──────────┘    └──────────┘
-                   wrc-landing      landing_metadata
-                   wrc-processed    processed_metadata
-                                    gold_decisions
-                                    monthly_stats
+┌──────────────────────────────────────────────┐
+│                 Apache Airflow                │
+│         scrape → transform                   │
+└───────────────────┬──────────────────────────┘
+                    │ orchestrates
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+   ┌─────────┐ ┌──────────┐ ┌──────────┐
+   │ Scrapy  │ │  MinIO   │ │ MongoDB  │
+   │ Spider  │─▶│ (files)  │ │(metadata)│
+   └─────────┘ └──────────┘ └──────────┘
+               wrc-landing   landing_metadata
+               wrc-processed processed_metadata
 ```
 
 ---
 
 ## Data Flow
 
-Data moves through four MongoDB collections and two MinIO buckets across five pipeline stages:
+Data moves through two MongoDB collections and two MinIO buckets across two pipeline stages:
 
 ```
 WRC Website
     │
     ▼ scrape_landing_zone
-    ├── MinIO:   wrc-landing/YYYY-MM/body_id/identifier.{html,pdf,doc}
+    ├── MinIO:   wrc-landing/YYYY-Www/body_id/identifier.{html,pdf,doc}
     └── MongoDB: landing_metadata
     │
     ▼ transform_processed_zone
-    ├── MinIO:   wrc-processed/processed/YYYY-MM/identifier.{html,pdf,doc}
+    ├── MinIO:   wrc-processed/YYYY-Www/body_id/identifier.{html,pdf,doc}
     └── MongoDB: processed_metadata
-    │
-    ▼ quality_check
-    │   validates processed_metadata — fails pipeline if >20% records are broken
-    │
-    ▼ gold_stage
-    └── MongoDB: gold_decisions  (+ plain_text, word_count, has_pdf)
-    │
-    ▼ aggregate_stats
-    └── MongoDB: monthly_stats  (decisions per body per month)
 ```
 
 ---
@@ -93,7 +82,7 @@ WRC Website
 ```
 .
 ├── dags/
-│   └── wrc_pipeline_dag.py          # Airflow DAG — 5-task pipeline
+│   └── wrc_pipeline_dag.py          # Airflow DAG — 2-task pipeline
 │
 ├── app/
 │   ├── common/
@@ -114,15 +103,8 @@ WRC Website
 │   │   ├── mongo_client.py          # All MongoDB operations
 │   │   └── minio_client.py          # All MinIO operations
 │   │
-│   ├── transform/
-│   │   └── transform.py             # HTML cleaning (Silver layer)
-│   │
-│   ├── quality/
-│   │   └── check.py                 # Data quality validation
-│   │
-│   └── gold/
-│       ├── gold.py                  # Gold enrichment (plain text, word count)
-│       └── aggregate.py             # Monthly statistics data mart
+│   └── transform/
+│       └── transform.py             # HTML cleaning (Silver layer)
 │
 ├── docker-compose.yml
 ├── requirements.txt
@@ -170,6 +152,27 @@ This will:
 | MinIO console | http://localhost:9001 | minioadmin / minioadmin |
 | MongoDB | localhost:27017 | root / root |
 
+### 5. Trigger a pipeline run manually
+
+To run the pipeline for a specific date range, trigger the DAG from the command line:
+
+```bash
+docker exec airflow_worker airflow dags trigger \
+  wrc_ingestion_transformation_pipeline \
+  --conf '{"start_date": "2026-03-10", "end_date": "2026-03-17"}'
+```
+
+Replace the dates with any `YYYY-MM-DD` range. The pipeline will scrape and transform all decisions published in that window.
+
+You can also trigger it from the Airflow UI: open the DAG, click **Trigger DAG w/ config**, and paste the JSON config:
+
+```json
+{
+  "start_date": "2026-03-10",
+  "end_date": "2026-03-17"
+}
+```
+
 ---
 
 ## Configuration
@@ -182,8 +185,6 @@ All settings are read from environment variables in `.env`. No values are hardco
 | `MONGO_DB` | `wrc_pipeline` | Database name |
 | `MONGO_LANDING_COLLECTION` | `landing_metadata` | Raw scrape metadata |
 | `MONGO_PROCESSED_COLLECTION` | `processed_metadata` | Cleaned file metadata |
-| `MONGO_GOLD_COLLECTION` | `gold_decisions` | Enriched decisions |
-| `MONGO_STATS_COLLECTION` | `monthly_stats` | Aggregated stats data mart |
 | `MINIO_ENDPOINT` | `minio:9000` | MinIO host:port |
 | `MINIO_LANDING_BUCKET` | `wrc-landing` | Raw files bucket |
 | `MINIO_PROCESSED_BUCKET` | `wrc-processed` | Cleaned files bucket |
@@ -227,7 +228,7 @@ To update credentials after deployment: edit the connection in the Airflow UI �
 }
 ```
 
-If no config is provided, the pipeline defaults to the previous 30 days.
+If no config is provided, the pipeline defaults to the previous 7 days.
 
 ### Option B — Command line (per stage)
 
@@ -235,30 +236,18 @@ If no config is provided, the pipeline defaults to the previous 30 days.
 # Scrape
 python -m scrapy crawl workplace_relations \
   -a start_date=2024-01-01 \
-  -a end_date=2024-03-31
+  -a end_date=2024-01-07
 
 # Transform
 python -m app.transform.transform \
-  --start-date 2024-01-01 --end-date 2024-03-31
-
-# Quality check
-python -m app.quality.check \
-  --start-date 2024-01-01 --end-date 2024-03-31
-
-# Gold stage
-python -m app.gold.gold \
-  --start-date 2024-01-01 --end-date 2024-03-31
-
-# Aggregate stats
-python -m app.gold.aggregate \
-  --start-date 2024-01-01 --end-date 2024-03-31
+  --start-date 2024-01-01 --end-date 2024-01-07
 ```
 
 ---
 
 ## Pipeline Stages
 
-### 1. `scrape_landing_zone` — Bronze Layer
+### 1. `scrape_landing_zone` — Landing Zone (Bronze)
 
 **What it does:** Crawls workplacerelations.ie for all decisions published in the date range, downloads the files, and stores them in the landing zone.
 
@@ -276,7 +265,7 @@ python -m app.gold.aggregate \
 
 ---
 
-### 2. `transform_processed_zone` — Silver Layer
+### 2. `transform_processed_zone` — Processed Zone (Silver)
 
 **What it does:** Reads every landing record for the date range, cleans the HTML content, and writes the result to the processed zone.
 
@@ -291,66 +280,6 @@ python -m app.gold.aggregate \
 **Failure behaviour:** Per-record errors are caught and logged. The task continues processing remaining records.
 
 **Timeout:** 1 hour
-
----
-
-### 3. `quality_check` — Validation Gate
-
-**What it does:** Validates the quality of processed data before promotion to the gold layer. Fails the pipeline if too many records are broken.
-
-**Checks performed:**
-
-| Check | Description |
-|-------|-------------|
-| Required fields | Every landing record must have: `identifier`, `source`, `title`, `published_date_iso`, `body`, `file_type`, `object_storage_path`, `file_hash` |
-| Processing coverage | Every landing record must have a corresponding processed record |
-| Failure rate | If more than 20% of records fail either check, the task exits with code 1 |
-
-**Zero records** is treated as valid — no decisions published in a month is a normal business scenario.
-
-**Retries:** 1 retry with 2-minute delay (fewer than other tasks — repeated quality failures indicate a real data problem, not a transient error).
-
-**Timeout:** 15 minutes
-
----
-
-### 4. `gold_stage` — Gold Layer
-
-**What it does:** Enriches processed records with analytics-ready fields and writes them to the gold collection.
-
-**Enrichments added:**
-
-| Field | Description |
-|-------|-------------|
-| `plain_text` | Full decision text with all HTML tags stripped — ready for search or NLP |
-| `word_count` | Number of words in `plain_text` — proxy for decision complexity |
-| `has_pdf` | Boolean flag — whether the original file was a PDF |
-| `gold_processed_at` | Timestamp when this record entered the gold layer |
-
-**Timeout:** 1 hour
-
----
-
-### 5. `aggregate_stats` — Data Mart
-
-**What it does:** Runs a MongoDB aggregation pipeline over `gold_decisions` and writes one summary document per (body × month) into `monthly_stats`.
-
-**Output document example:**
-
-```json
-{
-  "body": "Workplace Relations Commission",
-  "body_id": "15376",
-  "year_month": "2024-03",
-  "total_decisions": 42,
-  "pdf_count": 30,
-  "html_count": 12,
-  "avg_word_count": 1850.5,
-  "computed_at": "2024-04-01T00:00:00Z"
-}
-```
-
-**Timeout:** 15 minutes
 
 ---
 
@@ -386,39 +315,12 @@ Same structure as `landing_metadata` with:
 - `input_object_storage_path` pointing to the original landing file
 - Updated `file_hash` (hash of the cleaned content)
 
-### `gold_decisions` — Enriched analytics layer
-
-Adds to processed metadata:
-- `plain_text` — full extracted text
-- `word_count` — integer word count
-- `has_pdf` — boolean
-- `gold_processed_at` — timestamp
-
-### `monthly_stats` — Data mart
-
-```json
-{
-  "body": "Labour Court",
-  "body_id": "3",
-  "year_month": "2024-03",
-  "total_decisions": 18,
-  "pdf_count": 12,
-  "html_count": 6,
-  "avg_word_count": 2100.3,
-  "computed_at": "2024-04-01T00:00:00Z"
-}
-```
-
 ### MongoDB Indexes
 
 | Collection | Index | Type |
 |-----------|-------|------|
 | `landing_metadata` | `(source, identifier)` | Unique |
 | `processed_metadata` | `(source, identifier)` | Unique |
-| `gold_decisions` | `(source, identifier)` | Unique |
-| `gold_decisions` | `published_date_iso` | Single field |
-| `gold_decisions` | `body_id` | Single field |
-| `monthly_stats` | `(body_id, year_month)` | Unique |
 
 ---
 
@@ -473,8 +375,6 @@ Logs are partitioned by month: `logs/YYYY-MM/filename.jsonl`
 | `logs/YYYY-MM/spider.jsonl` | Spider events — per-record failures, partition summaries |
 | `logs/YYYY-MM/ingestion.jsonl` | Pipeline events — uploads, skips, drops |
 | `logs/YYYY-MM/transform.jsonl` | Transform events — per-record success/failure |
-| `logs/YYYY-MM/quality.jsonl` | Quality check results and per-record issues |
-| `logs/YYYY-MM/gold.jsonl` | Gold stage and aggregation events |
 
 ### Airflow task retries
 
@@ -483,7 +383,7 @@ Logs are partitioned by month: `logs/YYYY-MM/filename.jsonl`
 | Retries | 2 (3 total attempts) |
 | Retry delay | 5 minutes |
 | Backoff | Exponential (5 → 10 → 20 min, capped at 30 min) |
-| Execution timeout | 3 hours (2 for scrape, 1 for transform/gold, 15 min for quality/stats) |
+| Execution timeout | 3 hours total (2 for scrape, 1 for transform) |
 
 ### Email alerts
 
@@ -550,18 +450,6 @@ Receives every yielded item, validates required fields, writes the file locally,
 
 Fetches landing metadata from MongoDB, downloads each file from MinIO, and cleans it. HTML decisions are processed with BeautifulSoup — the primary strategy targets the specific `div.content` inside `div.col-sm-9` that the WRC site uses for decision bodies; a fallback strips known chrome elements (nav, header, footer, cookie bars) if the primary selector fails. PDF/DOC files pass through unchanged. Cleaned files are uploaded to `wrc-processed` and metadata is upserted to `processed_metadata`.
 
-### `app/quality/check.py`
-
-A validation gate between the Silver and Gold layers. Checks that every landing record has required fields and a corresponding processed record. Fails with `sys.exit(1)` if the failure rate exceeds 20% — Airflow treats a non-zero exit code as task failure, triggering retries and the email alert. Zero records is treated as valid (no decisions in a month is a normal scenario, not an error).
-
-### `app/gold/gold.py`
-
-Promotes processed records to the gold layer by adding analytics-ready enrichments: `plain_text` (HTML stripped to plain text via BeautifulSoup `get_text()`), `word_count` (length of `plain_text.split()`), and `has_pdf` (boolean). These fields make the collection useful for full-text search, NLP pipelines, and analytics dashboards without needing to re-process files.
-
-### `app/gold/aggregate.py`
-
-Runs a 4-stage MongoDB aggregation pipeline: `$match` (filter by date), `$addFields` (extract YYYY-MM from the ISO date), `$group` (count and average per body × month), `$sort`. Results are upserted into `monthly_stats` — the final data mart layer, ready for reporting.
-
 ### `dags/wrc_pipeline_dag.py`
 
-The Airflow DAG defines the 5-task pipeline and its operational behaviour. `_conn_env()` reads credentials from Airflow Connections at DAG parse time and injects them as `env=` into each BashOperator — the app code reads `os.getenv()` and gets Connection values transparently. Jinja templates (`{{ dag_run.conf.get(...) }}`) allow manual date override at trigger time while defaulting to the previous 30 days for scheduled runs. The `>>` operator chain (`scrape >> transform >> quality_check >> gold_stage >> aggregate_stats`) defines the dependency order — if any task fails after all retries, all downstream tasks are skipped automatically.
+The Airflow DAG defines the 2-task pipeline and its operational behaviour. `_conn_env()` reads credentials from Airflow Connections at DAG parse time and injects them as `env=` into each BashOperator — the app code reads `os.getenv()` and gets Connection values transparently. Jinja templates (`{{ dag_run.conf.get(...) }}`) allow manual date override at trigger time while defaulting to the previous 7 days for scheduled runs. The `>>` operator chain (`scrape >> transform`) defines the dependency order — if scrape fails after all retries, transform is skipped automatically.
